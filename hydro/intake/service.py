@@ -54,7 +54,7 @@ class IntakeService:
                 raise NoHeadError("no measured head for " + unit_id)
             value = self._measured[unit_id]
             generation = self._ctx.generations.bump(SCOPE_HEAD, unit_id)
-            seq = self.head_seq(unit_id)
+            seq = self.head_seq(unit_id) + 1
             record = HeadRecord(
                 unit_id=unit_id,
                 value=value,
@@ -75,10 +75,13 @@ class IntakeService:
         return payload
 
     def current_head(self, unit_id: str) -> float:
-        try:
-            return float(self._head_payload(unit_id)["value"])
-        except HeadNotPersistedError:
-            return self.latest(unit_id)
+        """The persisted head, and nothing else.
+
+        A measurement that only lives in memory is transient and must never
+        be handed out as a basis for downstream decisions.
+        """
+
+        return float(self._head_payload(unit_id)["value"])
 
     def validate(self, unit_id: str) -> None:
         self._head_payload(unit_id)
@@ -91,10 +94,19 @@ class IntakeService:
         return "persisted"
 
     def head_seq(self, unit_id: str) -> int:
-        return 1 if self.latest(unit_id) else 0
+        """Sequence of the latest persisted head record (0 when none).
+
+        Read back from the record stream so every persisted measurement
+        shows up as a new number in the ledger, including after a restart.
+        """
+
+        payload = self._journal.latest(KIND_HEAD, unit_id)
+        if payload is None:
+            return 0
+        return int(payload.get("seq", 0))
 
     def head_generation(self, unit_id: str) -> int:
-        return 0
+        return self._ctx.generations.current(SCOPE_HEAD, unit_id)
 
     # ------------------------------------------------------------ calibration
 
