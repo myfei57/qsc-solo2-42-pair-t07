@@ -43,7 +43,7 @@ class IntakeService:
 
     def pressure_head(self, pressure: float, density: float) -> float:
         if density <= 0:
-            return float(pressure)
+            raise NoHeadError("density must be positive to convert pressure to head")
         return pressure / density * OPEN_FLOW_RATE
 
     # ------------------------------------------------------------ persistence
@@ -54,7 +54,7 @@ class IntakeService:
                 raise NoHeadError("no measured head for " + unit_id)
             value = self._measured[unit_id]
             generation = self._ctx.generations.bump(SCOPE_HEAD, unit_id)
-            seq = self.head_seq(unit_id)
+            seq = self.head_seq(unit_id) + 1
             record = HeadRecord(
                 unit_id=unit_id,
                 value=value,
@@ -75,10 +75,8 @@ class IntakeService:
         return payload
 
     def current_head(self, unit_id: str) -> float:
-        try:
-            return float(self._head_payload(unit_id)["value"])
-        except HeadNotPersistedError:
-            return self.latest(unit_id)
+        """The committed head. A measurement that was never persisted is not a basis."""
+        return float(self._head_payload(unit_id)["value"])
 
     def validate(self, unit_id: str) -> None:
         self._head_payload(unit_id)
@@ -91,10 +89,18 @@ class IntakeService:
         return "persisted"
 
     def head_seq(self, unit_id: str) -> int:
-        return 1 if self.latest(unit_id) else 0
+        """Sequence of the newest committed head record, 0 when none persisted.
+
+        Read back from the record stream so every persist advances it and a
+        restart keeps it.
+        """
+        records = self._journal.records(KIND_HEAD, unit_id)
+        if not records:
+            return 0
+        return int(records[-1].payload.get("seq", 0))
 
     def head_generation(self, unit_id: str) -> int:
-        return 0
+        return self._ctx.generations.current(SCOPE_HEAD, unit_id)
 
     # ------------------------------------------------------------ calibration
 
